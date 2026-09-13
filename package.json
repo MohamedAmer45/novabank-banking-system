@@ -8,7 +8,9 @@
     "start": "node server.js",
     "dev": "nodemon server.js",
     "db:migrate": "node scripts/migrate.js",
-    "db:check": "node scripts/db-check.js"
+    "db:check": "node scripts/db-check.js",
+    "db:seed": "node scripts/seed.js",
+    "db:seed-check": "node scripts/seed-check.js"
   },
   "keywords": [],
   "author": "",
