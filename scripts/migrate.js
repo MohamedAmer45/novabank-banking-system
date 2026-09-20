@@ -1,182 +1,72 @@
-const fs = require("fs");
-const path = require("path");
-const dotenv = require("dotenv");
+import 'dotenv/config';
+import fs from 'node:fs';
+import path from 'node:path';
 
-dotenv.config();
+import { getPool, closePool, ROOT_DIR } from '../src/database.js';
 
-const {
-    getPool
-} = require("../src/db/database");
+const RESET = process.argv.includes('--reset');
 
+/*
+ * Every table this application owns, ordered so that --reset names them
+ * explicitly rather than dropping the whole schema. Anything else living in
+ * the database is left alone.
+ */
+const OWNED_TABLES = [
+  'loan_payments', 'bill_payments', 'saved_billers', 'billers',
+  'transactions', 'transfers', 'beneficiaries', 'cards', 'loans',
+  'fraud_alerts', 'notifications', 'audit_logs', 'kyc_profiles',
+  'accounts', 'sessions', 'verification_tokens', 'users',
+  'schema_migrations'
+];
 
 async function migrate() {
+  const pool = getPool();
+  const client = await pool.connect();
 
-    const pool =
-        getPool();
-
-    if (!pool) {
-        throw new Error(
-            "DATABASE_URL is not configured."
-        );
+  try {
+    if (RESET) {
+      console.log(`RESET  dropping ${OWNED_TABLES.length} application tables`);
+      for (const table of OWNED_TABLES) {
+        await client.query(`DROP TABLE IF EXISTS ${table} CASCADE`);
+      }
     }
 
+    const schemaPath = path.join(ROOT_DIR, 'database', 'postgres-schema.sql');
+    const schema = fs.readFileSync(schemaPath, 'utf8');
 
-    const client =
-        await pool.connect();
+    console.log('APPLY  database/postgres-schema.sql');
 
+    /*
+     * The schema is written with IF NOT EXISTS throughout, so applying it to an
+     * existing database is a no-op. It runs in one transaction so a partial
+     * schema can never be left behind.
+     */
+    await client.query('BEGIN');
     try {
-
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS schema_migrations (
-                id BIGSERIAL PRIMARY KEY,
-                file_name VARCHAR(255) NOT NULL UNIQUE,
-                executed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-        `);
-
-
-        const migrationsDirectory =
-            path.join(
-                __dirname,
-                "..",
-                "migrations"
-            );
-
-
-        const migrationFiles =
-            fs.readdirSync(
-                migrationsDirectory
-            )
-            .filter(
-                file =>
-                    file.endsWith(".sql")
-            )
-            .sort();
-
-
-        for (
-            const fileName
-            of migrationFiles
-        ) {
-
-            const existing =
-                await client.query(
-                    `
-                    SELECT 1
-                    FROM schema_migrations
-                    WHERE file_name = $1
-                    `,
-                    [
-                        fileName
-                    ]
-                );
-
-
-            if (
-                existing.rowCount > 0
-            ) {
-
-                console.log(
-                    `SKIP ${fileName}`
-                );
-
-                continue;
-            }
-
-
-            const fullPath =
-                path.join(
-                    migrationsDirectory,
-                    fileName
-                );
-
-
-            const sql =
-                fs.readFileSync(
-                    fullPath,
-                    "utf8"
-                );
-
-
-            console.log(
-                `RUN  ${fileName}`
-            );
-
-
-            await client.query(
-                "BEGIN"
-            );
-
-
-            try {
-
-                await client.query(
-                    sql
-                );
-
-
-                await client.query(
-                    `
-                    INSERT INTO schema_migrations (
-                        file_name
-                    )
-                    VALUES ($1)
-                    `,
-                    [
-                        fileName
-                    ]
-                );
-
-
-                await client.query(
-                    "COMMIT"
-                );
-
-
-                console.log(
-                    `DONE ${fileName}`
-                );
-
-            } catch (error) {
-
-                await client.query(
-                    "ROLLBACK"
-                );
-
-                throw error;
-            }
-        }
-
-
-        console.log(
-            ""
-        );
-
-        console.log(
-            "Database migrations completed successfully."
-        );
-
-    } finally {
-
-        client.release();
-
-        await pool.end();
+      await client.query(schema);
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
     }
+
+    const { rows } = await client.query(
+      `SELECT table_name
+         FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+        ORDER BY table_name`
+    );
+
+    console.log(`\nMigration complete. ${rows.length} tables present:`);
+    for (const row of rows) console.log(`  - ${row.table_name}`);
+  } finally {
+    client.release();
+    await closePool();
+  }
 }
 
-
-migrate()
-    .catch(
-        error => {
-
-            console.error(
-                "Migration failed:"
-            );
-
-            console.error(
-                error
-            );
-
-            process.exit(1);
-        }
-    );
+migrate().catch(err => {
+  console.error('Migration failed:');
+  console.error(err);
+  process.exit(1);
+});
