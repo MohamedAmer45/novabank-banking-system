@@ -1,6 +1,53 @@
 # NovaBank REST API surface
 
+Base URL: `https://novabank-banking-system.vercel.app/api`, or
+`http://localhost:3000/api` when running locally.
+
 All authenticated endpoints use `Authorization: Bearer <session-token>`. QA mode exposes deterministic OTP/reset codes and accepts controlled fault-injection fields; these must not exist in a real banking production environment.
+
+## Obtaining a session
+
+Login does not return a session token. It returns an MFA challenge, which is
+then exchanged for one:
+
+```http
+POST /api/auth/login
+{ "email": "customer@novabank.test", "password": "Demo123!" }
+
+200 { "mfaRequired": true, "challenge": "<challenge>", "demoCode": "123456" }
+```
+
+```http
+POST /api/auth/mfa
+{ "challenge": "<challenge>", "code": "123456" }
+
+200 { "token": "<session-token>", "user": { ... } }
+```
+
+`demoCode` appears only when `QA_MODE=true`. The challenge is single-use and
+expires after 5 minutes. Pass `"rememberDevice": true` to either call for a
+30-day session instead of the default 8 hours.
+
+## Status codes
+
+| Code | Meaning |
+|---|---|
+| `400` | Malformed request, or a value outside its allowed range |
+| `401` | Missing/expired session, wrong password, or wrong one-time code |
+| `403` | Authenticated but not permitted — role, KYC state, or unverified email |
+| `404` | Not found, or owned by another customer |
+| `409` | Rejected by a business rule — insufficient funds, limit, or entity state |
+| `413` | Request body over 1 MB |
+| `422` | Transfer recorded but failed downstream; no account was debited |
+| `423` | Account locked after 5 failed logins (15 minutes) |
+
+Ownership failures return `404` rather than `403`, so the API never confirms
+that another customer's resource exists.
+
+## Health
+
+- `GET /api/health` — unauthenticated; reports service, time, database driver,
+  QA mode and the FX table
 
 ## Authentication
 - `POST /api/auth/register`

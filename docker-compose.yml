@@ -1,13 +1,38 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: novabank
+      POSTGRES_PASSWORD: novabank
+      POSTGRES_DB: novabank
+    ports:
+      - "5432:5432"
+    volumes:
+      - novabank-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U novabank"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   novabank:
     build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "3000:3000"
     environment:
       PORT: 3000
       QA_MODE: "true"
-      NOVABANK_DB: /data/novabank.db
-    volumes:
-      - novabank-data:/data
+      DATABASE_SSL: "false"
+      DATABASE_URL: postgresql://novabank:novabank@postgres:5432/novabank
+    # Bring the schema and fixtures up before serving, so `docker compose up`
+    # yields a working bank on a clean volume.
+    command: >-
+      sh -c "node scripts/migrate.js &&
+             node scripts/seed.js &&
+             node server.js"
+
 volumes:
-  novabank-data:
+  novabank-pgdata:

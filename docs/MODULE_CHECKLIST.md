@@ -41,7 +41,9 @@
 | Unusual-country login fraud rule | Yes (QA header) |
 | Fraud investigation states | Yes |
 | Transfer reversal | Yes |
-| Scheduled job processing | Yes |
+| Scheduled transfer/bill processing | Yes |
 | CI smoke suite | GitHub Actions + Jenkins |
+| Row-level locking under concurrency | Yes |
+| Ledger reconciliation check (`npm run db:check`) | Yes |
 | Docker runtime | Yes |
-| PostgreSQL target schema | Yes |
+| PostgreSQL persistence | Yes |
