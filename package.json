@@ -1,31 +1,23 @@
 {
   "name": "novabank-banking-system",
-  "version": "1.0.0",
-  "description": "Full-stack simulated banking system for QA engineering",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Full-stack simulated retail banking system built as the application under test for the qa-banking-system QA portfolio.",
+  "type": "module",
   "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server.js",
-    "dev": "nodemon server.js",
+    "dev": "node --watch server.js",
     "db:migrate": "node scripts/migrate.js",
-    "db:check": "node scripts/db-check.js",
     "db:seed": "node scripts/seed.js",
-    "db:seed-check": "node scripts/seed-check.js"
+    "db:reset": "node scripts/migrate.js --reset && node scripts/seed.js",
+    "smoke": "node scripts/smoke.js",
+    "check": "node --check server.js && node --check src/app.js && node --check src/banking.js && node --check src/database.js",
+    "db:check": "node scripts/db-check.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
   "dependencies": {
-    "bcryptjs": "^3.0.3",
     "dotenv": "^17.4.2",
-    "express": "^5.2.1",
-    "helmet": "^8.3.0",
-    "jsonwebtoken": "^9.0.3",
     "pg": "^8.23.0"
-  },
-  "devDependencies": {
-    "nodemon": "^3.1.14"
   },
   "engines": {
     "node": ">=22.5.0"

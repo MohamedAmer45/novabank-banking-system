@@ -1,25 +1,31 @@
-require("dotenv").config();
+import 'dotenv/config';
+import http from 'node:http';
 
-const app =
-    require("./src/app");
+import { handleRequest } from './src/app.js';
+import { checkDatabaseConnection, closePool } from './src/database.js';
 
-const PORT =
-    Number(
-        process.env.PORT
-        || 3000
-    );
+const PORT = Number(process.env.PORT || 3000);
 
+const health = await checkDatabaseConnection();
 
-app.listen(
-    PORT,
-    () => {
+if (!health.connected) {
+  console.error('Could not reach PostgreSQL:', health.error);
+  console.error('Set DATABASE_URL, then run: npm run db:migrate && npm run db:seed');
+  process.exit(1);
+}
 
-        console.log(
-            `NovaBank running at http://localhost:${PORT}`
-        );
+const server = http.createServer(handleRequest);
 
-        console.log(
-            `Health endpoint: http://localhost:${PORT}/api/health`
-        );
-    }
-);
+server.listen(PORT, () => {
+  console.log(`NovaBank QA Lab running at http://localhost:${PORT}`);
+  console.log(`Health endpoint:  http://localhost:${PORT}/api/health`);
+});
+
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.on(signal, () => {
+    server.close(async () => {
+      await closePool();
+      process.exit(0);
+    });
+  });
+}

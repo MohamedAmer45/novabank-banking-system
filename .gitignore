@@ -8,3 +8,6 @@ dist/
 .DS_Store
 .vercel
 .env*
+
+# Stray build output
+scripts/_*.mjs

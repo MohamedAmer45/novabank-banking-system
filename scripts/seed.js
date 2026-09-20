@@ -1,1276 +1,227 @@
-require("dotenv").config();
+import 'dotenv/config';
 
-const bcrypt =
-    require("bcryptjs");
+import { execute, queryOne, withTransaction, closePool } from '../src/database.js';
+import { hashPassword, nowIso } from '../src/security.js';
 
-const {
-    getPool
-} = require("../src/db/database");
+const FORCE = process.argv.includes('--force');
 
+const DEMO_MFA_CODE = '123456';
+const DEFAULT_PHONE = '+20 100 000 0000';
 
-const customerPassword =
-    process.env.SEED_CUSTOMER_PASSWORD;
-
-const staffPassword =
-    process.env.SEED_STAFF_PASSWORD;
-
-
-if (!customerPassword) {
-    throw new Error(
-        "SEED_CUSTOMER_PASSWORD is not configured."
-    );
+async function insertUser(email, password, first, last, role = 'CUSTOMER') {
+  const result = await execute(
+    `INSERT INTO users (email,password_hash,first_name,last_name,phone,role,status,email_verified,mfa_enabled,mfa_code,created_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+    email, hashPassword(password), first, last, DEFAULT_PHONE,
+    role, 'ACTIVE', 1, 1, DEMO_MFA_CODE, nowIso()
+  );
+  return result.lastInsertRowid;
 }
 
-if (!staffPassword) {
-    throw new Error(
-        "SEED_STAFF_PASSWORD is not configured."
-    );
+async function insertAccount(
+  userId, number, iban, type, currency, balanceMinor, dailyLimitMinor = 25000000
+) {
+  const now = nowIso();
+
+  const result = await execute(
+    `INSERT INTO accounts (user_id,account_number,iban,account_type,currency,balance_minor,available_minor,status,daily_limit_minor,daily_transferred_minor,daily_counter_date,opened_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+    userId, number, iban, type, currency, balanceMinor, balanceMinor,
+    'ACTIVE', dailyLimitMinor, 0, now.slice(0, 10), now
+  );
+
+  const accountId = result.lastInsertRowid;
+
+  await execute(
+    `INSERT INTO transactions (reference,account_id,transaction_type,direction,amount_minor,fee_minor,currency,status,description,balance_after_minor,created_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+    `TXN-OPEN-${accountId}-${Date.now()}`, accountId, 'DEPOSIT', 'CREDIT',
+    balanceMinor, 0, currency, 'COMPLETED', 'Opening balance', balanceMinor, nowIso()
+  );
+
+  return accountId;
 }
 
+async function insertKyc(userId, status, profile, reviewerId = null) {
+  await execute(
+    `INSERT INTO kyc_profiles (user_id,status,date_of_birth,nationality,address,employment,annual_income_minor,id_type,id_number,document_name,reviewer_note,reviewed_by,updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    userId, status, profile.dateOfBirth, profile.nationality, profile.address,
+    profile.employment, profile.annualIncomeMinor, 'NATIONAL_ID', profile.idNumber,
+    profile.documentName, profile.reviewerNote || null, reviewerId, nowIso()
+  );
+}
 
 async function seed() {
+  const existing = await queryOne('SELECT COUNT(*)::int AS count FROM users');
 
-    const pool =
-        getPool();
+  if (Number(existing.count) > 0 && !FORCE) {
+    console.log(
+      `Database already contains ${existing.count} users. ` +
+      'Pass --force to seed anyway, or run: npm run db:reset'
+    );
+    return;
+  }
 
-    if (!pool) {
-        throw new Error(
-            "DATABASE_URL is not configured."
-        );
+  await withTransaction(async () => {
+    // ---------------------------------------------------------- users
+    const customerId = await insertUser(
+      'customer@novabank.test', 'Demo123!', 'Mohamed', 'Amer'
+    );
+    const receiverId = await insertUser(
+      'receiver@novabank.test', 'Demo123!', 'Nadia', 'Hassan'
+    );
+    const adminId = await insertUser(
+      'admin@novabank.test', 'Admin123!', 'Nora', 'Admin', 'ADMIN'
+    );
+    await insertUser('manager@novabank.test', 'Manager123!', 'Karim', 'Manager', 'MANAGER');
+    await insertUser('support@novabank.test', 'Support123!', 'Maya', 'Support', 'SUPPORT');
+    await insertUser('auditor@novabank.test', 'Auditor123!', 'Omar', 'Auditor', 'AUDITOR');
+    await insertUser('employee@novabank.test', 'Employee123!', 'Salma', 'Employee', 'EMPLOYEE');
+
+    // ------------------------------------------------------------ kyc
+    await insertKyc(customerId, 'VERIFIED', {
+      dateOfBirth: '1999-04-18',
+      nationality: 'Egyptian',
+      address: 'Sheikh Zayed, Giza, Egypt',
+      employment: 'Software Quality Engineer',
+      annualIncomeMinor: 72000000,
+      idNumber: '29804181234567',
+      documentName: 'national-id-demo.pdf',
+      reviewerNote: 'Seeded verified customer for QA scenarios'
+    }, adminId);
+
+    await insertKyc(receiverId, 'VERIFIED', {
+      dateOfBirth: '1997-07-05',
+      nationality: 'Egyptian',
+      address: 'Cairo, Egypt',
+      employment: 'Designer',
+      annualIncomeMinor: 48000000,
+      idNumber: '29707051234567',
+      documentName: 'receiver-id-demo.pdf',
+      reviewerNote: 'Verified'
+    }, adminId);
+
+    // ------------------------------------------------------- accounts
+    const currentId = await insertAccount(
+      customerId, '1000000001', 'EG380001000000001000000001', 'CURRENT', 'EGP', 25000000, 15000000
+    );
+    await insertAccount(
+      customerId, '1000000002', 'EG380001000000001000000002', 'SAVINGS', 'EGP', 8000000, 10000000
+    );
+    await insertAccount(
+      customerId, '2000000001', 'EG380001000000002000000001', 'SAVINGS', 'USD', 150000, 500000
+    );
+    await insertAccount(
+      receiverId, '1000000003', 'EG380001000000001000000003', 'CURRENT', 'EGP', 4000000, 15000000
+    );
+
+    // --------------------------------------------------- beneficiaries
+    await execute(
+      `INSERT INTO beneficiaries (user_id,name,bank_name,account_identifier,currency,nickname,status,verified,created_at)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
+      customerId, 'Nadia Hassan', 'NOVABANK', '1000000003', 'EGP', 'Nadia', 'ACTIVE', 1, nowIso()
+    );
+    await execute(
+      `INSERT INTO beneficiaries (user_id,name,bank_name,account_identifier,currency,nickname,status,verified,created_at)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
+      customerId, 'External Test Recipient', 'NILE EXTERNAL BANK', 'EXT-998877', 'EGP',
+      'External Demo', 'ACTIVE', 1, nowIso()
+    );
+
+    // ----------------------------------------------------------- card
+    await execute(
+      `INSERT INTO cards (user_id,account_id,last4,cardholder_name,card_type,status,expiry_month,expiry_year,created_at)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
+      customerId, currentId, '4242', 'MOHAMED AMER', 'DEBIT', 'ACTIVE', 12, 2030, nowIso()
+    );
+
+    // -------------------------------------------------------- billers
+    const billers = [
+      ['ELEC-CAIRO', 'Cairo Electricity', 'Electricity', 'Meter number'],
+      ['WATER-GIZA', 'Giza Water', 'Water', 'Subscriber number'],
+      ['GAS-NAT', 'Natural Gas', 'Gas', 'Customer number'],
+      ['ISP-FIBER', 'FiberNet Internet', 'Internet', 'Landline / account number'],
+      ['MOBILE-01', 'Mobile One', 'Mobile', 'Mobile number'],
+      ['CC-PAY', 'Credit Card Payment', 'Credit Card', 'Card reference']
+    ];
+
+    for (const biller of billers) {
+      await execute(
+        'INSERT INTO billers (code,name,category,customer_reference_label) VALUES (?,?,?,?)',
+        ...biller
+      );
     }
 
-
-    const client =
-        await pool.connect();
-
-
-    try {
-
-        console.log("");
-        console.log("Starting NovaBank QA seed...");
-        console.log("");
-
-        await client.query(
-            "BEGIN"
-        );
-
-
-        // ====================================================
-        // PASSWORD HASHES
-        // ====================================================
-
-        const customerHash =
-            await bcrypt.hash(
-                customerPassword,
-                12
-            );
-
-        const staffHash =
-            await bcrypt.hash(
-                staffPassword,
-                12
-            );
-
-
-        // ====================================================
-        // USERS
-        // ====================================================
-
-        const users = [
-            {
-                email: "customer@novabank.test",
-                firstName: "QA",
-                lastName: "Customer",
-                role: "CUSTOMER",
-                passwordHash: customerHash
-            },
-            {
-                email: "admin@novabank.test",
-                firstName: "QA",
-                lastName: "Admin",
-                role: "ADMIN",
-                passwordHash: staffHash
-            },
-            {
-                email: "manager@novabank.test",
-                firstName: "QA",
-                lastName: "Manager",
-                role: "MANAGER",
-                passwordHash: staffHash
-            },
-            {
-                email: "employee@novabank.test",
-                firstName: "QA",
-                lastName: "Employee",
-                role: "EMPLOYEE",
-                passwordHash: staffHash
-            },
-            {
-                email: "support@novabank.test",
-                firstName: "QA",
-                lastName: "Support",
-                role: "SUPPORT",
-                passwordHash: staffHash
-            },
-            {
-                email: "auditor@novabank.test",
-                firstName: "QA",
-                lastName: "Auditor",
-                role: "AUDITOR",
-                passwordHash: staffHash
-            }
-        ];
-
-
-        const userIds = {};
-
-
-        for (const user of users) {
-
-            const result =
-                await client.query(
-                    `
-                    INSERT INTO users (
-                        email,
-                        password_hash,
-                        first_name,
-                        last_name,
-                        role,
-                        status,
-                        email_verified,
-                        mfa_enabled,
-                        password_changed_at
-                    )
-                    VALUES (
-                        $1,
-                        $2,
-                        $3,
-                        $4,
-                        $5,
-                        'ACTIVE',
-                        TRUE,
-                        TRUE,
-                        NOW()
-                    )
-                    ON CONFLICT (
-                        LOWER(email)
-                    )
-                    DO UPDATE SET
-                        password_hash =
-                            EXCLUDED.password_hash,
-                        first_name =
-                            EXCLUDED.first_name,
-                        last_name =
-                            EXCLUDED.last_name,
-                        role =
-                            EXCLUDED.role,
-                        status =
-                            'ACTIVE',
-                        email_verified =
-                            TRUE,
-                        mfa_enabled =
-                            TRUE,
-                        failed_login_attempts =
-                            0,
-                        locked_until =
-                            NULL
-                    RETURNING id
-                    `,
-                    [
-                        user.email,
-                        user.passwordHash,
-                        user.firstName,
-                        user.lastName,
-                        user.role
-                    ]
-                );
-
-
-            userIds[user.email] =
-                result.rows[0].id;
-        }
-
-
-        const customerId =
-            userIds["customer@novabank.test"];
-
-        const adminId =
-            userIds["admin@novabank.test"];
-
-
-        // ====================================================
-        // KYC
-        // ====================================================
-
-        await client.query(
-            `
-            INSERT INTO kyc_profiles (
-                user_id,
-                status,
-                date_of_birth,
-                nationality,
-                address,
-                employment,
-                annual_income_minor,
-                id_type,
-                id_number,
-                reviewer_note,
-                reviewed_by,
-                reviewed_at
-            )
-            VALUES (
-                $1,
-                'VERIFIED',
-                DATE '1999-01-15',
-                'Egyptian',
-                'Cairo, Egypt',
-                'Software Quality Engineer',
-                60000000,
-                'NATIONAL_ID',
-                'QA-NATIONAL-ID-001',
-                'Verified QA seed profile.',
-                $2,
-                NOW()
-            )
-            ON CONFLICT (user_id)
-            DO UPDATE SET
-                status = 'VERIFIED',
-                nationality = EXCLUDED.nationality,
-                address = EXCLUDED.address,
-                employment = EXCLUDED.employment,
-                annual_income_minor =
-                    EXCLUDED.annual_income_minor,
-                reviewer_note =
-                    EXCLUDED.reviewer_note,
-                reviewed_by =
-                    EXCLUDED.reviewed_by,
-                reviewed_at =
-                    NOW()
-            `,
-            [
-                customerId,
-                adminId
-            ]
-        );
-
-
-        // ====================================================
-        // ACCOUNTS
-        //
-        // Monetary values are stored in minor units.
-        //
-        // 25000000 = 250,000.00 EGP
-        // ====================================================
-
-        const accountSeeds = [
-            {
-                accountNumber:
-                    "QA-CURRENT-001",
-
-                iban:
-                    "EG380001000000QA000000001",
-
-                type:
-                    "CURRENT",
-
-                currency:
-                    "EGP",
-
-                balance:
-                    25000000
-            },
-            {
-                accountNumber:
-                    "QA-SAVINGS-001",
-
-                iban:
-                    "EG380001000000QA000000002",
-
-                type:
-                    "SAVINGS",
-
-                currency:
-                    "EGP",
-
-                balance:
-                    10000000
-            },
-            {
-                accountNumber:
-                    "QA-USD-001",
-
-                iban:
-                    "EG380001000000QA000000003",
-
-                type:
-                    "CURRENT",
-
-                currency:
-                    "USD",
-
-                balance:
-                    500000
-            }
-        ];
-
-
-        const accountIds = {};
-
-
-        for (
-            const account
-            of accountSeeds
-        ) {
-
-            const result =
-                await client.query(
-                    `
-                    INSERT INTO accounts (
-                        user_id,
-                        account_number,
-                        iban,
-                        account_type,
-                        currency,
-                        balance_minor,
-                        daily_limit_minor,
-                        status
-                    )
-                    VALUES (
-                        $1,
-                        $2,
-                        $3,
-                        $4,
-                        $5,
-                        $6,
-                        5000000,
-                        'ACTIVE'
-                    )
-                    ON CONFLICT (account_number)
-                    DO UPDATE SET
-                        user_id =
-                            EXCLUDED.user_id,
-                        iban =
-                            EXCLUDED.iban,
-                        account_type =
-                            EXCLUDED.account_type,
-                        currency =
-                            EXCLUDED.currency,
-                        balance_minor =
-                            EXCLUDED.balance_minor,
-                        status =
-                            'ACTIVE'
-                    RETURNING id
-                    `,
-                    [
-                        customerId,
-                        account.accountNumber,
-                        account.iban,
-                        account.type,
-                        account.currency,
-                        account.balance
-                    ]
-                );
-
-
-            accountIds[
-                account.accountNumber
-            ] =
-                result.rows[0].id;
-        }
-
-
-        const currentAccountId =
-            accountIds[
-                "QA-CURRENT-001"
-            ];
-
-        const savingsAccountId =
-            accountIds[
-                "QA-SAVINGS-001"
-            ];
-
-
-        // ====================================================
-        // BENEFICIARIES
-        // ====================================================
-
-        await client.query(
-            `
-            DELETE FROM beneficiaries
-            WHERE user_id = $1
-              AND name LIKE 'QA Beneficiary%'
-            `,
-            [
-                customerId
-            ]
-        );
-
-
-        const beneficiaryResult =
-            await client.query(
-                `
-                INSERT INTO beneficiaries (
-                    user_id,
-                    name,
-                    nickname,
-                    bank_name,
-                    account_identifier,
-                    currency,
-                    verified,
-                    status
-                )
-                VALUES (
-                    $1,
-                    'QA Beneficiary Primary',
-                    'QA Primary',
-                    'CAIRO TEST BANK',
-                    'QA-BEN-001',
-                    'EGP',
-                    TRUE,
-                    'ACTIVE'
-                )
-                RETURNING id
-                `,
-                [
-                    customerId
-                ]
-            );
-
-
-        const beneficiaryId =
-            beneficiaryResult.rows[0].id;
-
-
-        // ====================================================
-        // CARDS
-        // ====================================================
-
-        await client.query(
-            `
-            DELETE FROM cards
-            WHERE user_id = $1
-            `,
-            [
-                customerId
-            ]
-        );
-
-
-        await client.query(
-            `
-            INSERT INTO cards (
-                user_id,
-                account_id,
-                last4,
-                cardholder_name,
-                expiry_month,
-                expiry_year,
-                status,
-                atm_enabled,
-                online_enabled,
-                international_enabled,
-                contactless_enabled,
-                atm_limit_minor,
-                purchase_limit_minor,
-                online_limit_minor
-            )
-            VALUES (
-                $1,
-                $2,
-                '4242',
-                'QA CUSTOMER',
-                12,
-                2030,
-                'ACTIVE',
-                TRUE,
-                TRUE,
-                FALSE,
-                TRUE,
-                500000,
-                1500000,
-                1000000
-            )
-            `,
-            [
-                customerId,
-                currentAccountId
-            ]
-        );
-
-
-        // ====================================================
-        // BILLERS
-        // ====================================================
-
-        const billerSeeds = [
-            [
-                "Cairo Electricity",
-                "UTILITIES"
-            ],
-            [
-                "Greater Cairo Water",
-                "UTILITIES"
-            ],
-            [
-                "Nova Telecom",
-                "TELECOM"
-            ],
-            [
-                "Egypt Internet",
-                "INTERNET"
-            ]
-        ];
-
-
-        const billerIds = {};
-
-
-        for (
-            const [name, category]
-            of billerSeeds
-        ) {
-
-            const existing =
-                await client.query(
-                    `
-                    SELECT id
-                    FROM billers
-                    WHERE name = $1
-                    LIMIT 1
-                    `,
-                    [
-                        name
-                    ]
-                );
-
-
-            let billerId;
-
-
-            if (
-                existing.rowCount > 0
-            ) {
-
-                billerId =
-                    existing.rows[0].id;
-
-
-                await client.query(
-                    `
-                    UPDATE billers
-                    SET
-                        category = $2,
-                        active = TRUE
-                    WHERE id = $1
-                    `,
-                    [
-                        billerId,
-                        category
-                    ]
-                );
-
-            } else {
-
-                const inserted =
-                    await client.query(
-                        `
-                        INSERT INTO billers (
-                            name,
-                            category,
-                            active
-                        )
-                        VALUES (
-                            $1,
-                            $2,
-                            TRUE
-                        )
-                        RETURNING id
-                        `,
-                        [
-                            name,
-                            category
-                        ]
-                    );
-
-
-                billerId =
-                    inserted.rows[0].id;
-            }
-
-
-            billerIds[name] =
-                billerId;
-        }
-
-
-        // ====================================================
-        // SAVED BILLER
-        // ====================================================
-
-        await client.query(
-            `
-            DELETE FROM saved_billers
-            WHERE user_id = $1
-            `,
-            [
-                customerId
-            ]
-        );
-
-
-        await client.query(
-            `
-            INSERT INTO saved_billers (
-                user_id,
-                biller_id,
-                alias,
-                customer_reference
-            )
-            VALUES (
-                $1,
-                $2,
-                'Home Electricity',
-                'ELEC-QA-001'
-            )
-            `,
-            [
-                customerId,
-                billerIds[
-                    "Cairo Electricity"
-                ]
-            ]
-        );
-
-
-        // ====================================================
-        // SAMPLE TRANSFER
-        // ====================================================
-
-        await client.query(
-            `
-            DELETE FROM transfers
-            WHERE user_id = $1
-              AND reference LIKE 'QA-SEED-%'
-            `,
-            [
-                customerId
-            ]
-        );
-
-
-        const transferResult =
-            await client.query(
-                `
-                INSERT INTO transfers (
-                    user_id,
-                    from_account_id,
-                    beneficiary_id,
-                    reference,
-                    transfer_type,
-                    amount_minor,
-                    fee_minor,
-                    source_currency,
-                    memo,
-                    status
-                )
-                VALUES (
-                    $1,
-                    $2,
-                    $3,
-                    'QA-SEED-TRANSFER-001',
-                    'EXTERNAL',
-                    250000,
-                    500,
-                    'EGP',
-                    'Seed transfer',
-                    'COMPLETED'
-                )
-                RETURNING id
-                `,
-                [
-                    customerId,
-                    currentAccountId,
-                    beneficiaryId
-                ]
-            );
-
-
-        const transferId =
-            transferResult.rows[0].id;
-
-
-        // ====================================================
-        // BILL PAYMENT
-        // ====================================================
-
-        await client.query(
-            `
-            DELETE FROM bill_payments
-            WHERE user_id = $1
-              AND reference LIKE 'QA-SEED-%'
-            `,
-            [
-                customerId
-            ]
-        );
-
-
-        const paymentResult =
-            await client.query(
-                `
-                INSERT INTO bill_payments (
-                    user_id,
-                    account_id,
-                    biller_id,
-                    reference,
-                    customer_reference,
-                    amount_minor,
-                    status
-                )
-                VALUES (
-                    $1,
-                    $2,
-                    $3,
-                    'QA-SEED-BILL-001',
-                    'ELEC-QA-001',
-                    120000,
-                    'COMPLETED'
-                )
-                RETURNING id
-                `,
-                [
-                    customerId,
-                    currentAccountId,
-                    billerIds[
-                        "Cairo Electricity"
-                    ]
-                ]
-            );
-
-
-        const billPaymentId =
-            paymentResult.rows[0].id;
-
-
-        // ====================================================
-        // LOAN
-        // ====================================================
-
-        await client.query(
-            `
-            DELETE FROM loans
-            WHERE user_id = $1
-            `,
-            [
-                customerId
-            ]
-        );
-
-
-        const loanResult =
-            await client.query(
-                `
-                INSERT INTO loans (
-                    user_id,
-                    disbursement_account_id,
-                    loan_type,
-                    amount_minor,
-                    interest_rate,
-                    term_months,
-                    monthly_payment_minor,
-                    remaining_principal_minor,
-                    purpose,
-                    status,
-                    underwriter_note,
-                    reviewed_by,
-                    reviewed_at
-                )
-                VALUES (
-                    $1,
-                    $2,
-                    'PERSONAL',
-                    5000000,
-                    14.5000,
-                    24,
-                    241200,
-                    4200000,
-                    'QA seed personal loan',
-                    'ACTIVE',
-                    'Approved QA seed loan.',
-                    $3,
-                    NOW()
-                )
-                RETURNING id
-                `,
-                [
-                    customerId,
-                    currentAccountId,
-                    adminId
-                ]
-            );
-
-
-        const loanId =
-            loanResult.rows[0].id;
-
-
-        // ====================================================
-        // TRANSACTION HISTORY
-        // ====================================================
-
-        await client.query(
-            `
-            DELETE FROM transactions
-            WHERE user_id = $1
-              AND reference LIKE 'QA-SEED-%'
-            `,
-            [
-                customerId
-            ]
-        );
-
-
-        const transactions = [
-            {
-                accountId:
-                    currentAccountId,
-
-                transferId:
-                    null,
-
-                billPaymentId:
-                    null,
-
-                loanId:
-                    null,
-
-                reference:
-                    "QA-SEED-DEPOSIT-001",
-
-                type:
-                    "DEPOSIT",
-
-                description:
-                    "QA salary deposit",
-
-                direction:
-                    "CREDIT",
-
-                amount:
-                    1500000,
-
-                fee:
-                    0,
-
-                balance:
-                    25000000,
-
-                currency:
-                    "EGP"
-            },
-            {
-                accountId:
-                    currentAccountId,
-
-                transferId,
-
-                billPaymentId:
-                    null,
-
-                loanId:
-                    null,
-
-                reference:
-                    "QA-SEED-TRANSFER-001",
-
-                type:
-                    "TRANSFER",
-
-                description:
-                    "Transfer to QA Beneficiary Primary",
-
-                direction:
-                    "DEBIT",
-
-                amount:
-                    250000,
-
-                fee:
-                    500,
-
-                balance:
-                    24749500,
-
-                currency:
-                    "EGP"
-            },
-            {
-                accountId:
-                    currentAccountId,
-
-                transferId:
-                    null,
-
-                billPaymentId,
-
-                loanId:
-                    null,
-
-                reference:
-                    "QA-SEED-BILL-001",
-
-                type:
-                    "BILL_PAYMENT",
-
-                description:
-                    "Cairo Electricity payment",
-
-                direction:
-                    "DEBIT",
-
-                amount:
-                    120000,
-
-                fee:
-                    0,
-
-                balance:
-                    24629500,
-
-                currency:
-                    "EGP"
-            },
-            {
-                accountId:
-                    currentAccountId,
-
-                transferId:
-                    null,
-
-                billPaymentId:
-                    null,
-
-                loanId,
-
-                reference:
-                    "QA-SEED-LOAN-001",
-
-                type:
-                    "LOAN_DISBURSEMENT",
-
-                description:
-                    "Personal loan disbursement",
-
-                direction:
-                    "CREDIT",
-
-                amount:
-                    5000000,
-
-                fee:
-                    0,
-
-                balance:
-                    29629500,
-
-                currency:
-                    "EGP"
-            }
-        ];
-
-
-        for (
-            const transaction
-            of transactions
-        ) {
-
-            await client.query(
-                `
-                INSERT INTO transactions (
-                    user_id,
-                    account_id,
-                    transfer_id,
-                    bill_payment_id,
-                    loan_id,
-                    reference,
-                    transaction_type,
-                    description,
-                    direction,
-                    amount_minor,
-                    fee_minor,
-                    balance_after_minor,
-                    currency,
-                    status
-                )
-                VALUES (
-                    $1,
-                    $2,
-                    $3,
-                    $4,
-                    $5,
-                    $6,
-                    $7,
-                    $8,
-                    $9,
-                    $10,
-                    $11,
-                    $12,
-                    $13,
-                    'COMPLETED'
-                )
-                `,
-                [
-                    customerId,
-                    transaction.accountId,
-                    transaction.transferId,
-                    transaction.billPaymentId,
-                    transaction.loanId,
-                    transaction.reference,
-                    transaction.type,
-                    transaction.description,
-                    transaction.direction,
-                    transaction.amount,
-                    transaction.fee,
-                    transaction.balance,
-                    transaction.currency
-                ]
-            );
-        }
-
-
-        // ====================================================
-        // SAVINGS TRANSACTION
-        // ====================================================
-
-        await client.query(
-            `
-            INSERT INTO transactions (
-                user_id,
-                account_id,
-                reference,
-                transaction_type,
-                description,
-                direction,
-                amount_minor,
-                fee_minor,
-                balance_after_minor,
-                currency,
-                status
-            )
-            VALUES (
-                $1,
-                $2,
-                'QA-SEED-SAVINGS-001',
-                'DEPOSIT',
-                'Initial QA savings balance',
-                'CREDIT',
-                10000000,
-                0,
-                10000000,
-                'EGP',
-                'COMPLETED'
-            )
-            `,
-            [
-                customerId,
-                savingsAccountId
-            ]
-        );
-
-
-        // ====================================================
-        // NOTIFICATIONS
-        // ====================================================
-
-        await client.query(
-            `
-            DELETE FROM notifications
-            WHERE user_id = $1
-            `,
-            [
-                customerId
-            ]
-        );
-
-
-        const notifications = [
-            [
-                "Welcome to NovaBank",
-                "Your QA banking profile is ready."
-            ],
-            [
-                "Transfer completed",
-                "QA-SEED-TRANSFER-001 was completed successfully."
-            ],
-            [
-                "Statement available",
-                "Your latest account statement is available."
-            ]
-        ];
-
-
-        for (
-            const notification
-            of notifications
-        ) {
-
-            await client.query(
-                `
-                INSERT INTO notifications (
-                    user_id,
-                    title,
-                    message,
-                    channel
-                )
-                VALUES (
-                    $1,
-                    $2,
-                    $3,
-                    'IN_APP'
-                )
-                `,
-                [
-                    customerId,
-                    notification[0],
-                    notification[1]
-                ]
-            );
-        }
-
-
-        // ====================================================
-        // AUDIT LOG
-        // ====================================================
-
-        await client.query(
-            `
-            INSERT INTO audit_logs (
-                actor_user_id,
-                action,
-                entity_type,
-                entity_id,
-                result,
-                metadata_json
-            )
-            VALUES (
-                $1,
-                'QA_DATABASE_SEED',
-                'SYSTEM',
-                'NOVABANK-QA-SEED',
-                'SUCCESS',
-                $2::jsonb
-            )
-            `,
-            [
-                adminId,
-                JSON.stringify({
-                    source:
-                        "scripts/seed.js",
-
-                    seededAt:
-                        new Date()
-                            .toISOString()
-                })
-            ]
-        );
-
-
-        await client.query(
-            "COMMIT"
-        );
-
-
-        // ====================================================
-        // SUMMARY
-        // ====================================================
-
-        console.log(
-            "NovaBank QA seed completed successfully."
-        );
-
-        console.log("");
-
-        console.log(
-            "Customer:"
-        );
-
-        console.log(
-            "  customer@novabank.test"
-        );
-
-        console.log("");
-
-        console.log(
-            "Staff:"
-        );
-
-        console.log(
-            "  admin@novabank.test"
-        );
-
-        console.log(
-            "  manager@novabank.test"
-        );
-
-        console.log(
-            "  employee@novabank.test"
-        );
-
-        console.log(
-            "  support@novabank.test"
-        );
-
-        console.log(
-            "  auditor@novabank.test"
-        );
-
-        console.log("");
-
-        console.log(
-            "MFA code:"
-        );
-
-        console.log(
-            "  123456"
-        );
-
-        console.log("");
-
-        console.log(
-            "Passwords were loaded from environment variables."
-        );
-
-
-    } catch (error) {
-
-        await client.query(
-            "ROLLBACK"
-        );
-
-        throw error;
-
-    } finally {
-
-        client.release();
-
-        await pool.end();
-    }
+    const electricity = await queryOne("SELECT id FROM billers WHERE code='ELEC-CAIRO'");
+    await execute(
+      `INSERT INTO saved_billers (user_id,biller_id,alias,customer_reference,created_at)
+       VALUES (?,?,?,?,?)`,
+      customerId, electricity.id, 'Home Electricity', 'MTR-44118822', nowIso()
+    );
+
+    await execute(
+      `INSERT INTO notifications (user_id,channel,notification_type,title,message,created_at)
+       VALUES (?,?,?,?,?,?)`,
+      customerId, 'IN_APP', 'WELCOME', 'Welcome to NovaBank',
+      'Your demo banking profile is ready for testing.', nowIso()
+    );
+
+    /*
+     * A customer awaiting KYC review and a loan awaiting a decision, so the
+     * back-office queues are never empty on a freshly seeded database.
+     */
+    const pendingId = await insertUser(
+      'pending@novabank.test', 'Demo123!', 'Youssef', 'Ali'
+    );
+    await insertKyc(pendingId, 'UNDER_REVIEW', {
+      dateOfBirth: '1995-03-12',
+      nationality: 'Egyptian',
+      address: 'Giza, Egypt',
+      employment: 'Accountant',
+      annualIncomeMinor: 36000000,
+      idNumber: '29503121234567',
+      documentName: 'pending-id.pdf'
+    });
+    await insertAccount(
+      pendingId, '1000000004', 'EG380001000000001000000004', 'CURRENT', 'EGP', 500000, 5000000
+    );
+
+    const monthlyRate = 0.18 / 12;
+    const monthlyPayment = Math.round(
+      (10000000 * monthlyRate * (1 + monthlyRate) ** 24) / (((1 + monthlyRate) ** 24) - 1)
+    );
+
+    await execute(
+      `INSERT INTO loans (user_id,loan_type,amount_minor,interest_rate,term_months,monthly_payment_minor,remaining_principal_minor,purpose,status,disbursement_account_id,applied_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+      customerId, 'PERSONAL', 10000000, 18, 24, monthlyPayment, 10000000,
+      'Home office equipment', 'SUBMITTED', currentId, nowIso()
+    );
+
+    await execute(
+      `INSERT INTO audit_logs (actor_user_id,action,entity_type,entity_id,ip_address,result,metadata_json,created_at)
+       VALUES (?,?,?,?,?,?,?,?)`,
+      adminId, 'SEED_DATABASE', 'SYSTEM', 'novabank', '127.0.0.1', 'SUCCESS', '{}', nowIso()
+    );
+  });
+
+  console.log('Seed complete.\n');
+  console.log('  customer@novabank.test  Demo123!      CUSTOMER  (KYC verified)');
+  console.log('  receiver@novabank.test  Demo123!      CUSTOMER  (transfer destination)');
+  console.log('  pending@novabank.test   Demo123!      CUSTOMER  (KYC under review)');
+  console.log('  admin@novabank.test     Admin123!     ADMIN');
+  console.log('  manager@novabank.test   Manager123!   MANAGER');
+  console.log('  support@novabank.test   Support123!   SUPPORT');
+  console.log('  auditor@novabank.test   Auditor123!   AUDITOR');
+  console.log('  employee@novabank.test  Employee123!  EMPLOYEE');
+  console.log(`\n  MFA code for every seeded user: ${DEMO_MFA_CODE}`);
 }
 
-
 seed()
-    .catch(
-        error => {
-
-            console.error("");
-            console.error(
-                "NovaBank QA seed failed:"
-            );
-
-            console.error(
-                error
-            );
-
-            process.exit(1);
-        }
-    );
+  .catch(err => {
+    console.error('Seed failed:');
+    console.error(err);
+    process.exitCode = 1;
+  })
+  .finally(closePool);
