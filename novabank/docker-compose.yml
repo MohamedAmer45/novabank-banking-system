@@ -1,0 +1,13 @@
+services:
+  novabank:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: 3000
+      QA_MODE: "true"
+      NOVABANK_DB: /data/novabank.db
+    volumes:
+      - novabank-data:/data
+volumes:
+  novabank-data:

@@ -1,0 +1,31 @@
+name: NovaBank CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Syntax checks
+        run: |
+          node --check server.js
+          node --check src/database.js
+          node --check src/banking.js
+          node --check public/app.js
+      - name: Start application
+        run: |
+          QA_MODE=true node server.js > /tmp/novabank.log 2>&1 &
+          echo $! > /tmp/novabank.pid
+          for i in {1..20}; do curl -fsS http://127.0.0.1:3000/api/health && break || sleep 1; done
+      - name: API and ledger smoke suite
+        run: node scripts/smoke.js
+      - name: Server log
+        if: always()
+        run: cat /tmp/novabank.log || true

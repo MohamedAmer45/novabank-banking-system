@@ -1,0 +1,7 @@
+node_modules/
+novabank.db
+novabank.db-shm
+novabank.db-wal
+.env
+.DS_Store
+reports/
