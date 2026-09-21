@@ -6,6 +6,10 @@ export const QA_MODE =
 
 const MAX_BODY_BYTES = 1_000_000;
 
+/* A refused request is drained so the 413 reaches the client, but only up to
+ * this ceiling, past which the connection is cut. */
+const HARD_BODY_LIMIT = 10 * MAX_BODY_BYTES;
+
 const CONTENT_TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
@@ -38,17 +42,41 @@ export function error(res, status, message, details) {
 export function bodyJson(req) {
   return new Promise((resolve, reject) => {
     let data = '';
+    let received = 0;
+    let refused = false;
+
+    const tooLarge = () =>
+      Object.assign(new Error('Request body too large.'), { status: 413 });
 
     req.on('data', chunk => {
-      data += chunk;
-      if (data.length > MAX_BODY_BYTES) {
-        reject(Object.assign(new Error('Request body too large.'), { status: 413 }));
-        req.destroy();
+      received += chunk.length;
+
+      if (!refused && received > MAX_BODY_BYTES) {
+        // Stop buffering, but keep draining. Answering while the client is
+        // still uploading makes some clients see a connection reset rather
+        // than the 413, so the remaining bytes are read and discarded and the
+        // refusal is sent once the request has finished.
+        refused = true;
+        data = '';
       }
+
+      if (refused) {
+        // A client that ignores the refusal and keeps sending is cut off
+        // rather than allowed to consume memory indefinitely.
+        if (received > HARD_BODY_LIMIT) {
+          req.destroy();
+          reject(tooLarge());
+        }
+        return;
+      }
+
+      data += chunk;
     });
 
     req.on('end', () => {
+      if (refused) return reject(tooLarge());
       if (!data) return resolve({});
+
       try {
         resolve(JSON.parse(data));
       } catch {
