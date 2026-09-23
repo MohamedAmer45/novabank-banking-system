@@ -15,6 +15,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  unit:
+    name: Jest unit suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    # No database and no server: these tests cover pure functions only, so the
+    # job is deliberately independent of the smoke suite below and fails fast
+    # when a rounding rule or a permission cell changes.
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Unit tests with coverage
+        run: npm run test:coverage
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jest-coverage
+          path: coverage/
+          retention-days: 7
+          if-no-files-found: warn
+
   smoke:
     name: API and ledger smoke suite
     runs-on: ubuntu-latest

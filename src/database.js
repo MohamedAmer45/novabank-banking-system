@@ -111,7 +111,8 @@ export async function execute(sql, ...params) {
   };
 }
 
-function withReturningId(sql) {
+/* Exported for unit testing; not part of the module's working surface. */
+export function withReturningId(sql) {
   if (!/^\s*INSERT\s+INTO/i.test(sql)) return sql;
   if (/\bRETURNING\b/i.test(sql)) return sql;
 

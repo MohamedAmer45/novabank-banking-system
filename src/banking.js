@@ -84,7 +84,8 @@ function txnRef() {
   return `TXN-${Date.now()}-${randomToken(3).toUpperCase()}`;
 }
 
-function convertMinor(amountMinor, source, target) {
+/* Exported for unit testing; not part of the module's working surface. */
+export function convertMinor(amountMinor, source, target) {
   if (source === target) return { rate: 1, amount: amountMinor };
   const egp = amountMinor * FX[source];
   return { rate: FX[source] / FX[target], amount: Math.round(egp / FX[target]) };
@@ -493,7 +494,8 @@ export async function reverseTransfer(actorId, transferId) {
   });
 }
 
-function nextRecurringDate(frequency) {
+/* Exported for unit testing; not part of the module's working surface. */
+export function nextRecurringDate(frequency) {
   const date = new Date();
   if (frequency === 'WEEKLY') date.setUTCDate(date.getUTCDate() + 7);
   else if (frequency === 'MONTHLY') date.setUTCMonth(date.getUTCMonth() + 1);
