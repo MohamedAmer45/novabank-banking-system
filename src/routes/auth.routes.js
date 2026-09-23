@@ -4,7 +4,7 @@ import {
 } from '../security.js';
 import { audit, notify, publicUser, userSnapshot } from '../banking.js';
 import { send, error, bodyJson, clientIp, QA_MODE } from '../lib/http.js';
-import { bearer, requireAuth } from '../lib/access.js';
+import { bearer, requireAuth, permissionsFor } from '../lib/access.js';
 
 const MFA_CHALLENGE_MINUTES = 5;
 const LOCKOUT_THRESHOLD = 5;
@@ -284,7 +284,11 @@ export async function changePassword(req, res) {
 export async function me(req, res) {
   const user = await requireAuth(req, res);
   if (!user) return;
-  return send(res, 200, await userSnapshot(user.id));
+
+  return send(res, 200, {
+    ...(await userSnapshot(user.id)),
+    permissions: permissionsFor(user.role)
+  });
 }
 
 export async function updateProfile(req, res) {

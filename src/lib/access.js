@@ -54,6 +54,23 @@ export function hasPermission(user, permission) {
   return granted.includes('*') || granted.includes(permission);
 }
 
+/*
+ * The permissions a role actually holds, with the wildcard expanded. The client
+ * uses this to decide which navigation entries to offer, so that the sidebar
+ * and the server's own checks are driven by one table rather than two lists
+ * that drift apart. (BUG-UI-002)
+ *
+ * This is a convenience, not a boundary: every route still calls
+ * requirePermission. Hiding a control has never been the authorization.
+ */
+export function permissionsFor(role) {
+  const granted = ROLE_PERMISSIONS[role] || [];
+
+  return granted.includes('*')
+    ? [...new Set(Object.values(ROLE_PERMISSIONS).flat())].filter(p => p !== '*').sort()
+    : [...granted].sort();
+}
+
 export async function requirePermission(req, res, permission) {
   const user = await requireAuth(req, res);
   if (!user) return null;

@@ -1,9 +1,31 @@
 import { describe, test, expect } from '@jest/globals';
 
-import { ROLE_PERMISSIONS, hasPermission, bearer, sanitizeIdNumber } from '../src/lib/access.js';
+import {
+  ROLE_PERMISSIONS, hasPermission, permissionsFor, bearer, sanitizeIdNumber
+} from '../src/lib/access.js';
 import { publicUser } from '../src/banking.js';
 
 const ROLES = ['CUSTOMER', 'SUPPORT', 'AUDITOR', 'EMPLOYEE', 'MANAGER', 'ADMIN'];
+
+/*
+ * The grid, asserted as a whole. A permission table is only correct if every
+ * cell is, and the failure worth catching is a role quietly gaining access:
+ * a matrix shows that as one wrong cell, where individual tests show it as a
+ * test nobody thought to write.
+ */
+const GRID = {
+  READ_CUSTOMERS: ['SUPPORT', 'AUDITOR', 'EMPLOYEE', 'MANAGER', 'ADMIN'],
+  READ_ACCOUNTS: ['SUPPORT', 'AUDITOR', 'EMPLOYEE', 'MANAGER', 'ADMIN'],
+  READ_TRANSFERS: ['SUPPORT', 'AUDITOR', 'EMPLOYEE', 'MANAGER', 'ADMIN'],
+  READ_AUDIT: ['AUDITOR', 'MANAGER', 'ADMIN'],
+  READ_FRAUD: ['AUDITOR', 'MANAGER', 'ADMIN'],
+  REVIEW_KYC: ['EMPLOYEE', 'MANAGER', 'ADMIN'],
+  MANAGE_ACCOUNTS: ['MANAGER', 'ADMIN'],
+  MANAGE_LIMITS: ['MANAGER', 'ADMIN'],
+  REVERSE_TRANSFER: ['MANAGER', 'ADMIN'],
+  REVIEW_LOANS: ['MANAGER', 'ADMIN'],
+  MANAGE_FRAUD: ['MANAGER', 'ADMIN']
+};
 
 describe('the permission table', () => {
   test('defines every role the application issues', () => {
@@ -47,25 +69,6 @@ describe('hasPermission', () => {
     expect(hasPermission({ role: 'MANAGER' }, 'DELETE_EVERYTHING')).toBe(false);
   });
 
-  /*
-   * The grid, asserted as a whole. A permission table is only correct if every
-   * cell is, and the failure worth catching is a role quietly gaining access:
-   * a matrix shows that as one wrong cell, where individual tests show it as a
-   * test nobody thought to write.
-   */
-  const GRID = {
-    READ_CUSTOMERS: ['SUPPORT', 'AUDITOR', 'EMPLOYEE', 'MANAGER', 'ADMIN'],
-    READ_ACCOUNTS: ['SUPPORT', 'AUDITOR', 'EMPLOYEE', 'MANAGER', 'ADMIN'],
-    READ_TRANSFERS: ['SUPPORT', 'AUDITOR', 'EMPLOYEE', 'MANAGER', 'ADMIN'],
-    READ_AUDIT: ['AUDITOR', 'MANAGER', 'ADMIN'],
-    READ_FRAUD: ['AUDITOR', 'MANAGER', 'ADMIN'],
-    REVIEW_KYC: ['EMPLOYEE', 'MANAGER', 'ADMIN'],
-    MANAGE_ACCOUNTS: ['MANAGER', 'ADMIN'],
-    MANAGE_LIMITS: ['MANAGER', 'ADMIN'],
-    REVERSE_TRANSFER: ['MANAGER', 'ADMIN'],
-    REVIEW_LOANS: ['MANAGER', 'ADMIN'],
-    MANAGE_FRAUD: ['MANAGER', 'ADMIN']
-  };
 
   test.each(Object.entries(GRID))(
     '%s is held by exactly the expected roles',
@@ -196,5 +199,53 @@ describe('sanitizeIdNumber', () => {
 
     expect(row.id_number).toBe('29804181234567');
     expect(row.document_data_b64).toBe('JVBERi0xLjQK');
+  });
+});
+
+describe('permissionsFor', () => {
+  /*
+   * The client filters the back-office sidebar on this list (BUG-UI-002). If it
+   * ever disagrees with hasPermission, the interface starts offering actions
+   * the server refuses, which is exactly the defect this replaced.
+   */
+  test('agrees with hasPermission for every role and every permission', () => {
+    ROLES.forEach(role => {
+      const listed = new Set(permissionsFor(role));
+
+      Object.keys(GRID).forEach(permission => {
+        expect(listed.has(permission)).toBe(hasPermission({ role }, permission));
+      });
+    });
+  });
+
+  test('expands the wildcard rather than reporting it', () => {
+    const admin = permissionsFor('ADMIN');
+
+    expect(admin).not.toContain('*');
+    expect(admin).toEqual(expect.arrayContaining(Object.keys(GRID)));
+  });
+
+  test('a customer gets an empty list', () => {
+    expect(permissionsFor('CUSTOMER')).toEqual([]);
+  });
+
+  test('an unknown role gets an empty list rather than everything', () => {
+    expect(permissionsFor('SUPERUSER')).toEqual([]);
+    expect(permissionsFor(undefined)).toEqual([]);
+  });
+
+  test('never reports a permission the role does not hold', () => {
+    expect(permissionsFor('SUPPORT')).not.toContain('REVERSE_TRANSFER');
+    expect(permissionsFor('AUDITOR')).not.toContain('MANAGE_ACCOUNTS');
+    expect(permissionsFor('EMPLOYEE')).not.toContain('READ_AUDIT');
+  });
+
+  test('returns a fresh array, so a caller cannot edit the table', () => {
+    // The route hands this straight to a JSON response. If it were the stored
+    // array, one mutation would change permissions for the whole process.
+    permissionsFor('SUPPORT').push('REVERSE_TRANSFER');
+
+    expect(hasPermission({ role: 'SUPPORT' }, 'REVERSE_TRANSFER')).toBe(false);
+    expect(permissionsFor('SUPPORT')).not.toContain('REVERSE_TRANSFER');
   });
 });

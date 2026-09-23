@@ -279,13 +279,30 @@ export async function accountStatement(req, res, params, url) {
 
 // ----------------------------------------------------- BENEFICIARIES
 
-export async function listBeneficiaries(req, res) {
+/*
+ * Deleting a beneficiary retires the row rather than removing it, because
+ * historical transfers reference it. Retired rows are therefore excluded here
+ * instead of at delete time: a client asking for "my beneficiaries" means the
+ * ones it can still pay, and a transfer to a non-ACTIVE beneficiary is refused
+ * anyway. Pass ?includeDeleted=true for the full lifecycle. (BUG-BEN-001)
+ */
+export async function listBeneficiaries(req, res, _params, url) {
   const user = await requireAuth(req, res);
   if (!user) return;
 
-  return send(res, 200, await queryAll(
-    'SELECT * FROM beneficiaries WHERE user_id=? ORDER BY created_at DESC', user.id
-  ));
+  const includeDeleted = url?.searchParams.get('includeDeleted') === 'true';
+
+  const rows = includeDeleted
+    ? await queryAll(
+        'SELECT * FROM beneficiaries WHERE user_id=? ORDER BY created_at DESC', user.id
+      )
+    : await queryAll(
+        `SELECT * FROM beneficiaries
+          WHERE user_id=? AND status <> 'DELETED'
+          ORDER BY created_at DESC`, user.id
+      );
+
+  return send(res, 200, rows);
 }
 
 export async function addBeneficiary(req, res) {

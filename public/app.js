@@ -17,10 +17,36 @@ const customerNav = [
   ['transactions','≡','Transactions'],['statements','▤','Statements'],['cards','▰','Cards'],['bills','⌁','Bills & payments'],
   ['loans','◇','Loans'],['kyc','✓','KYC & profile'],['notifications','●','Notifications'],['security','⚿','Security']
 ];
+/*
+ * The fourth element is what the view's own list endpoint requires, taken from
+ * the guard on each admin route rather than invented here. 'role:ADMIN' marks
+ * the two endpoints guarded by requireAdmin instead of a permission.
+ *
+ * Filtering this against the permissions /api/me reports means the sidebar and
+ * the server read the same table, so an entry cannot be offered to a role the
+ * server will refuse. (BUG-UI-002)
+ */
 const adminNav = [
-  ['admin-dashboard','⌂','Operations'],['admin-customers','◉','Customers'],['admin-kyc','✓','KYC review'],['admin-accounts','◫','Accounts'],
-  ['admin-transfers','⇄','Transfers'],['admin-loans','◇','Loans'],['admin-fraud','⚑','Fraud alerts'],['admin-audit','≣','Audit logs'],['admin-users','♙','Users & roles']
+  ['admin-dashboard','⌂','Operations','READ_CUSTOMERS'],['admin-customers','◉','Customers','READ_CUSTOMERS'],
+  ['admin-kyc','✓','KYC review','READ_CUSTOMERS'],['admin-accounts','◫','Accounts','READ_ACCOUNTS'],
+  ['admin-transfers','⇄','Transfers','READ_TRANSFERS'],['admin-loans','◇','Loans','READ_CUSTOMERS'],
+  ['admin-fraud','⚑','Fraud alerts','READ_FRAUD'],['admin-audit','≣','Audit logs','READ_AUDIT'],
+  ['admin-users','♙','Users & roles','role:ADMIN']
 ];
+
+/*
+ * A convenience, never the authorization: every one of these endpoints still
+ * enforces its own guard. This only stops the interface offering an action
+ * that is certain to fail.
+ */
+function navAllowed(entry){
+  const need=entry[3];
+  if(!need)return true;
+  if(need.startsWith('role:'))return state.me?.user?.role===need.slice(5);
+  return (state.me?.permissions||[]).includes(need);
+}
+
+function navFor(role){return staffRoles.has(role)?adminNav.filter(navAllowed):customerNav;}
 const staffRoles = new Set(['ADMIN','MANAGER','SUPPORT','AUDITOR','EMPLOYEE']);
 
 function escapeHtml(v=''){return String(v).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
@@ -85,7 +111,7 @@ async function bootstrap(){
   try{state.me=await api('/api/me');state.view=staffRoles.has(state.me.user.role)?'admin-dashboard':'overview';renderShell();await navigate(state.view);}catch{logout(false);}
 }
 function renderShell(){
-  const u=state.me.user,staff=staffRoles.has(u.role),nav=staff?adminNav:customerNav;
+  const u=state.me.user,staff=staffRoles.has(u.role),nav=navFor(u.role);
   app.innerHTML=`<div class="app-shell"><aside class="sidebar"><div class="brand"><div class="brand-mark">N</div><span>NovaBank</span></div><div class="nav-group"><div class="nav-label">${staff?'Back office':'Banking'}</div>${nav.map(([id,ic,label])=>`<button class="nav-btn" data-view="${id}" data-testid="nav-${id}" onclick="navigate('${id}')"><span class="nav-icon">${ic}</span><span class="nav-text">${label}</span></button>`).join('')}</div><div class="sidebar-bottom"><div class="user-chip" data-testid="user-chip"><b>${escapeHtml(u.first_name)} ${escapeHtml(u.last_name)}</b><span>${escapeHtml(u.role.replaceAll('_',' '))}</span></div><button class="nav-btn" onclick="logout()" data-testid="logout"><span class="nav-icon">↪</span><span class="nav-text">Sign out</span></button></div></aside><main class="content"><div class="topbar"><div><div class="small muted" id="eyebrow">NOVABANK</div><h1 id="page-title" data-testid="page-title">Loading…</h1></div><div class="top-actions"><span class="badge info" data-testid="user-role">${escapeHtml(u.role)}</span>${!staff?`<button class="btn" onclick="navigate('notifications')">Notifications <span id="unread-count" data-testid="unread-count">${state.me.unreadNotifications||0}</span></button>`:''}</div></div><div id="view" data-testid="view"></div></main></div>`;
 }
 window.navigate=navigate;
