@@ -55,6 +55,9 @@ export const SECURITY_HEADERS = {
   'Referrer-Policy': 'no-referrer',
   'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=()',
   'Cross-Origin-Opener-Policy': 'same-origin',
+  // Safe to require here because the interface loads nothing cross-origin:
+  // no CDN, no external font, no third-party script.
+  'Cross-Origin-Embedder-Policy': 'require-corp',
   'Cross-Origin-Resource-Policy': 'same-origin'
 };
 
