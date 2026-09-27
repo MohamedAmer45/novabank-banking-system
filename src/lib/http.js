@@ -40,7 +40,9 @@ const CONTENT_TYPES = {
 export const SECURITY_HEADERS = {
   'Content-Security-Policy': [
     "default-src 'self'",
-    "script-src 'self' 'unsafe-inline'",
+    // No 'unsafe-inline': every handler is delegated from a data-action
+    // attribute, so nothing in this page needs inline script to run.
+    "script-src 'self'",
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data:",
     "connect-src 'self'",
