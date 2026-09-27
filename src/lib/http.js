@@ -21,6 +21,43 @@ const CONTENT_TYPES = {
   '.woff2': 'font/woff2'
 };
 
+/*
+ * Security headers applied to every response (WEBSEC-001 to WEBSEC-009).
+ *
+ * These are the controls that fail silently: nothing breaks when they are
+ * absent, so their absence survives until somebody looks at a response.
+ *
+ * On the Content-Security-Policy, 'unsafe-inline' in script-src is a known
+ * weakness, not an oversight. The interface attaches its event handlers inline
+ * in markup (onclick, onsubmit, onchange), and an inline handler cannot run
+ * without it -- a nonce does not help, because nonces apply to <script>
+ * elements and not to handler attributes. What the policy still buys: scripts
+ * and styles cannot be loaded from another origin, plugins are refused, and a
+ * base tag cannot be injected to re-point relative URLs. Removing
+ * 'unsafe-inline' means moving every handler to addEventListener, which is
+ * recorded against WEBSEC-001 in the catalog.
+ */
+export const SECURITY_HEADERS = {
+  'Content-Security-Policy': [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data:",
+    "connect-src 'self'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'"
+  ].join('; '),
+  // frame-ancestors covers modern browsers; X-Frame-Options covers the rest.
+  'X-Frame-Options': 'DENY',
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'no-referrer',
+  'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=()',
+  'Cross-Origin-Opener-Policy': 'same-origin',
+  'Cross-Origin-Resource-Policy': 'same-origin'
+};
+
 export function send(res, status, data, headers = {}) {
   const isText = typeof data === 'string';
 
@@ -28,7 +65,9 @@ export function send(res, status, data, headers = {}) {
     'Content-Type': isText
       ? 'text/plain; charset=utf-8'
       : 'application/json; charset=utf-8',
+    // WEBSEC-006: account and transaction data must not sit in a shared cache.
     'Cache-Control': 'no-store',
+    ...SECURITY_HEADERS,
     ...headers
   });
 
@@ -92,7 +131,8 @@ export function sendFile(res, buffer, mime, filename) {
   res.writeHead(200, {
     'Content-Type': mime || 'application/octet-stream',
     'Content-Disposition': `attachment; filename="${String(filename).replaceAll('"', '')}"`,
-    'Cache-Control': 'no-store'
+    'Cache-Control': 'no-store',
+    ...SECURITY_HEADERS
   });
   res.end(buffer);
 }
@@ -120,7 +160,8 @@ export function serveStatic(req, res, url, publicDir) {
 
   res.writeHead(200, {
     'Content-Type': CONTENT_TYPES[ext] || 'application/octet-stream',
-    'Cache-Control': ext === '.html' ? 'no-store' : 'public, max-age=300'
+    'Cache-Control': ext === '.html' ? 'no-store' : 'public, max-age=300',
+    ...SECURITY_HEADERS
   });
 
   fs.createReadStream(file).pipe(res);

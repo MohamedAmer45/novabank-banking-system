@@ -2,7 +2,7 @@ import path from 'node:path';
 
 import { ROOT_DIR } from './database.js';
 import { FX, processDueScheduledItems } from './banking.js';
-import { send, error, serveStatic, QA_MODE } from './lib/http.js';
+import { send, error, serveStatic, QA_MODE, SECURITY_HEADERS } from './lib/http.js';
 import { nowIso } from './security.js';
 
 import * as auth from './routes/auth.routes.js';
@@ -11,11 +11,41 @@ import * as admin from './routes/admin.routes.js';
 
 const PUBLIC_DIR = path.join(ROOT_DIR, 'public');
 
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization, Idempotency-Key, X-QA-Country',
-  'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS'
-};
+/*
+ * WEBSEC-005. The interface is served from the same origin as the API, so no
+ * browser needs cross-origin access to it. This used to answer every preflight
+ * with Access-Control-Allow-Origin: *, which tells any site on the internet
+ * that it may read this API's responses -- for a bank, the wrong default even
+ * when sessions are bearer tokens rather than cookies.
+ *
+ * An explicit allowlist instead. ALLOWED_ORIGINS adds origins for a deployment
+ * that serves its frontend separately; unset, only same-origin applies. Tools
+ * that are not browsers -- REST Assured, Newman, curl -- are unaffected either
+ * way, because CORS is enforced by the browser and not by the server.
+ */
+const ALLOWED_ORIGINS = new Set(
+  (process.env.ALLOWED_ORIGINS || '')
+    .split(',')
+    .map(origin => origin.trim())
+    .filter(Boolean)
+);
+
+function corsHeaders(req) {
+  const origin = req.headers.origin;
+  const headers = {
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, Idempotency-Key, X-QA-Country',
+    'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS',
+    Vary: 'Origin'
+  };
+
+  // Echo only an origin we recognise. An unknown origin gets no grant at all,
+  // which is what makes the browser refuse to hand over the response.
+  if (origin && ALLOWED_ORIGINS.has(origin)) {
+    headers['Access-Control-Allow-Origin'] = origin;
+  }
+
+  return headers;
+}
 
 async function health(req, res) {
   return send(res, 200, {
@@ -147,7 +177,7 @@ export async function handleRequest(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
 
   if (req.method === 'OPTIONS') {
-    res.writeHead(204, CORS_HEADERS);
+    res.writeHead(204, { ...corsHeaders(req), ...SECURITY_HEADERS });
     return res.end();
   }
 
