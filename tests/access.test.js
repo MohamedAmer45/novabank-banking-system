@@ -240,6 +240,23 @@ describe('permissionsFor', () => {
     expect(permissionsFor('EMPLOYEE')).not.toContain('READ_AUDIT');
   });
 
+  /*
+   * Found by mutation testing: removing .sort() survived every assertion here,
+   * because they all used arrayContaining or not.toContain, which say nothing
+   * about order. The client renders navigation from this list, so a stable
+   * order is the point of sorting it -- and nothing said so until a mutant
+   * removed it and no test noticed.
+   */
+  test('returns the permissions in a stable, sorted order', () => {
+    const admin = permissionsFor('ADMIN');
+
+    expect(admin).toEqual([...admin].sort());
+    expect(admin.length).toBeGreaterThan(1);
+
+    const support = permissionsFor('SUPPORT');
+    expect(support).toEqual([...support].sort());
+  });
+
   test('returns a fresh array, so a caller cannot edit the table', () => {
     // The route hands this straight to a JSON response. If it were the stored
     // array, one mutation would change permissions for the whole process.

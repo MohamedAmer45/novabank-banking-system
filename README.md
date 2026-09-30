@@ -95,8 +95,26 @@ public/                   The single-page app
 docs/                     API surface, architecture, coverage checklist
 ```
 
+## Tests in this repository
+
+The application's own suites. Everything else — UI, API, database, BDD,
+performance, accessibility and security — lives in the QA repository.
+
+```bash
+npm test                  # 141 unit tests over the pure functions
+npm run test:coverage     # the same, with a per-file table
+npm run test:mutation     # Stryker: do the tests notice a deliberate fault?
+npm run smoke             # a running server, end to end
+npm run db:check          # the ledger invariant against real data
+```
+
+Mutation testing found five faults the 134 green tests before it did not, all
+now covered. [`MUTATION.md`](MUTATION.md) explains what the score measures and,
+more usefully, what it does not.
+
 ## Documentation
 
 - [`docs/API.md`](docs/API.md) — every endpoint
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — invariants and how money moves
 - [`docs/MODULE_CHECKLIST.md`](docs/MODULE_CHECKLIST.md) — what is implemented
+- [`MUTATION.md`](MUTATION.md) — mutation testing, and how to read the score

@@ -16,7 +16,8 @@
     "db:check": "node scripts/db-check.js",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
-    "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage"
+    "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage",
+    "test:mutation": "cross-env NODE_OPTIONS=--experimental-vm-modules stryker run"
   },
   "dependencies": {
     "dotenv": "^17.4.2",
@@ -26,6 +27,9 @@
     "node": ">=22.5.0"
   },
   "devDependencies": {
+    "@stryker-mutator/core": "^10.0.0",
+    "@stryker-mutator/jest-runner": "^10.0.0",
+    "cross-env": "^10.1.0",
     "jest": "^30.5.2"
   }
 }

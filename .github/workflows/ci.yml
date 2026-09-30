@@ -39,6 +39,42 @@ jobs:
       - name: Unit tests with coverage
         run: npm run test:coverage
 
+      # Reported, not gated. The total score is dominated by mutants in code
+      # the unit suite deliberately does not target, so a threshold on it would
+      # measure scope rather than test quality -- it would move whenever someone
+      # added a function. MUTATION.md explains how to read the number.
+      - name: Mutation testing
+        run: |
+          npm run test:mutation
+
+          node -e '
+            const r = require("./reports/mutation/mutation.json");
+            let killed = 0, survived = 0, noCov = 0;
+            const perFile = [];
+            for (const [file, data] of Object.entries(r.files)) {
+              const k = data.mutants.filter(m => m.status === "Killed").length;
+              const s = data.mutants.filter(m => m.status === "Survived").length;
+              const n = data.mutants.filter(m => m.status === "NoCoverage").length;
+              killed += k; survived += s; noCov += n;
+              if (k + s > 0) {
+                perFile.push(`${require("path").basename(file)} ${((k / (k + s)) * 100).toFixed(1)}%`);
+              }
+            }
+            const covered = ((killed / (killed + survived)) * 100).toFixed(1);
+            const line = `mutation score ${covered}% of covered mutants (${killed} killed, ${survived} survived, ${noCov} not reached)`;
+            console.log(line);
+            console.log(`::notice title=Mutation testing::${line}; ${perFile.join("; ")}`);
+          '
+
+      - name: Upload the mutation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-report
+          path: reports/mutation/
+          retention-days: 7
+          if-no-files-found: warn
+
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@v4

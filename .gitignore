@@ -11,3 +11,5 @@ dist/
 
 # Stray build output
 scripts/_*.mjs
+reports/
+.stryker-tmp/

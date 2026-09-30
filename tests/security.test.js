@@ -137,6 +137,38 @@ describe('maskAccount', () => {
     expect(masked.slice(0, -4).length).toBeGreaterThanOrEqual(account.length - 4);
   });
 
+  /*
+   * Boundary, found by mutation testing. Changing `str.length <= 4` to `< 4`
+   * survived the whole suite: nothing exercised a value of exactly four
+   * characters, so the off-by-one had nowhere to show itself. Classic
+   * boundary-value territory, and it took a mutant to notice the boundary was
+   * never visited.
+   */
+  test('leaves a value of exactly four characters alone', () => {
+    expect(maskAccount('1234')).toBe('1234');
+  });
+
+  /*
+   * Also from mutation testing. The assertions here deliberately checked the
+   * property rather than the exact glyphs -- and that is precisely why
+   * changing `str.length - 4` to `str.length + 4` survived: eighteen mask
+   * characters satisfy "only the last four are legible" just as well as six do.
+   *
+   * So the count is pinned to the rule, max(4, length - 4), without pinning
+   * the character used to mask. Property assertions are robust to cosmetic
+   * change and blind to magnitude; this covers the gap between them.
+   */
+  test.each([
+    ['1000000001', 6],
+    ['12345', 4],
+    ['123456789012', 8]
+  ])('masks %s with exactly %i characters', (account, expectedStars) => {
+    const masked = maskAccount(account);
+
+    expect(masked.endsWith(account.slice(-4))).toBe(true);
+    expect(masked.length - 4).toBe(expectedStars);
+  });
+
   test('leaves a short value alone rather than mangling it', () => {
     expect(maskAccount('123')).toBe('123');
   });

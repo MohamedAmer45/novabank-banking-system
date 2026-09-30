@@ -125,6 +125,29 @@ describe('withReturningId', () => {
     expect(withReturningId(sql)).toBe(`${sql} RETURNING id`);
   });
 
+  /*
+   * Two cases found by mutation testing, both in the regex.
+   *
+   * Dropping the ^ anchor survived: no test had SQL where the words INSERT INTO
+   * appear somewhere other than the start, so nothing noticed that a SELECT
+   * mentioning them would have RETURNING id appended to it.
+   */
+  test('ignores INSERT INTO appearing inside a select', () => {
+    const sql = "SELECT * FROM audit_logs WHERE note='INSERT INTO users'";
+
+    expect(withReturningId(sql)).toBe(sql);
+  });
+
+  /*
+   * And narrowing \s+ to \s survived, because every test used exactly one
+   * space between the two words. Generated or hand-edited SQL does not
+   * guarantee that.
+   */
+  test('tolerates irregular whitespace between INSERT and INTO', () => {
+    expect(withReturningId('INSERT  INTO users (a) VALUES (?)'))
+      .toBe('INSERT  INTO users (a) VALUES (?) RETURNING id');
+  });
+
   test('tolerates leading whitespace and mixed case', () => {
     expect(withReturningId('\n  insert into users (email) values (?)'))
       .toContain('RETURNING id');
