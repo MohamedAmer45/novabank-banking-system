@@ -1,0 +1,176 @@
+# Production deployment.
+#
+# This exists because the Vercel Git integration needs a GitHub login
+# connection on the Vercel account, which is an account-level authorization the
+# CLI cannot perform with a token. This workflow reaches the same outcome --
+# every green push to main lands in production -- without linking the two
+# accounts, using the CLI and a project token instead.
+#
+# It is deliberately triggered by CI finishing, not by the push itself. A push
+# that breaks the ledger invariant should not reach production while its own
+# test run is still going, and `on: push` would race exactly that.
+#
+# Setup, once. Settings -> Secrets and variables -> Actions:
+#
+#   VERCEL_TOKEN        vercel.com/account/tokens -- scope it to this project
+#   VERCEL_ORG_ID       `vercel project inspect`, or .vercel/project.json -> orgId
+#   VERCEL_PROJECT_ID   the same file -> projectId
+#
+# Until those exist the workflow skips with a notice rather than failing, so an
+# unconfigured repository does not show a red run on every push.
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: ['NovaBank CI']
+    types: [completed]
+  workflow_dispatch:
+
+# One production deploy at a time, and never cancel one in flight: a cancelled
+# `vercel deploy` can leave the alias pointing at a half-promoted build.
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to production
+    runs-on: ubuntu-latest
+
+    # A manual run deploys whatever main is at. An automatic one requires the
+    # CI run that triggered it to have passed, on main.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      PRODUCTION_URL: https://novabank-banking-system.vercel.app
+
+    steps:
+      - name: Check the deployment credentials
+        id: gate
+        run: |
+          missing=()
+          [ -n "$VERCEL_TOKEN" ]      || missing+=("VERCEL_TOKEN")
+          [ -n "$VERCEL_ORG_ID" ]     || missing+=("VERCEL_ORG_ID")
+          [ -n "$VERCEL_PROJECT_ID" ] || missing+=("VERCEL_PROJECT_ID")
+
+          if [ ${#missing[@]} -eq 0 ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "configured=false" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Deploy skipped::Not configured. Missing: ${missing[*]}. The comment at the top of .github/workflows/deploy.yml says where each value comes from."
+          echo "Deployment is not configured yet. Missing: ${missing[*]}"
+          echo "This is a skip, not a failure -- CI passed and nothing was deployed."
+
+      - name: Check out the commit CI tested
+        if: steps.gate.outputs.configured == 'true'
+        uses: actions/checkout@v4
+        with:
+          # For a workflow_run the default ref is the branch tip, which may
+          # already have moved past the commit that passed CI. Deploy the
+          # commit that was actually tested.
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+
+      - name: Set up Node.js
+        if: steps.gate.outputs.configured == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install the Vercel CLI
+        if: steps.gate.outputs.configured == 'true'
+        # Pinned. An unpinned CLI means the deploy step can change under a
+        # commit that touched nothing. 59.16.0 is the version this project's
+        # manual deploys were made with, so this changes the trigger and not
+        # the tool.
+        run: npm install --global vercel@59.16.0
+
+      - name: Deploy
+        id: deploy
+        if: steps.gate.outputs.configured == 'true'
+        run: |
+          # No --prebuilt: Vercel builds from source, the same path this
+          # project has always deployed through. `vercel deploy` blocks until
+          # the deployment is ready, so the checks below run against a live
+          # build.
+          #
+          # Take the last https line rather than the whole of stdout. The CLI
+          # prints progress on stderr, but a banner or an upgrade notice
+          # landing on stdout would otherwise end up inside the URL and every
+          # check below would fail on a deploy that actually worked.
+          out=$(vercel deploy --prod --yes --token="$VERCEL_TOKEN")
+          url=$(echo "$out" | grep -Eo 'https://[^[:space:]]+' | tail -1)
+
+          if [ -z "$url" ]; then
+            echo "::error title=No deployment URL::The CLI exited 0 but printed no URL."
+            echo "$out"
+            exit 1
+          fi
+
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Deployment: $url"
+
+      # The deploy succeeding means Vercel accepted the build. It does not mean
+      # the application works: a missing environment variable, an unreachable
+      # database or a broken vercel.json all deploy green and fail at runtime.
+      - name: Verify the deployment
+        if: steps.gate.outputs.configured == 'true'
+        env:
+          DEPLOY_URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          fail() {
+            echo "::error title=Deployment verification failed::$1"
+            echo "FAILED: $1"
+            exit 1
+          }
+
+          # 1. The function boots and serves JSON.
+          health=$(curl -sS --max-time 20 "$DEPLOY_URL/api/health") \
+            || fail "/api/health did not respond on the new deployment"
+          echo "$health" | grep -q '"status":"ok"' \
+            || fail "/api/health did not report ok: ${health:0:200}"
+          echo "health ok"
+
+          # 2. The database is reachable. A wrong password has to be looked up
+          #    to be rejected, so a 401 proves the query ran. If the database
+          #    were unreachable this would be a 5xx -- which is exactly the
+          #    failure a health endpoint returning a static object cannot see.
+          #    Deliberately a rejected login: it reads, and writes nothing.
+          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 \
+            -X POST "$DEPLOY_URL/api/auth/login" \
+            -H 'Content-Type: application/json' \
+            -d '{"email":"customer@novabank.test","password":"not-the-password"}')
+          [ "$code" = "401" ] \
+            || fail "expected 401 from a rejected login, got $code -- the database is probably unreachable"
+          echo "database reachable"
+
+          # 3. The security headers survived. For the static shell these come
+          #    from vercel.json, which no unit test can reach, so an edit to
+          #    that file can drop them silently.
+          headers=$(curl -sSI --max-time 20 "$DEPLOY_URL/")
+          for header in content-security-policy x-content-type-options \
+                        x-frame-options referrer-policy; do
+            echo "$headers" | grep -iq "^$header:" \
+              || fail "$header is missing from the deployed static shell"
+          done
+          echo "$headers" | grep -i '^content-security-policy:' | grep -q "script-src 'self'" \
+            || fail "the CSP no longer restricts script-src to 'self'"
+          echo "security headers ok"
+
+          # 4. The production alias points at this build. Checks 1-3 pass
+          #    against the deployment URL even when promotion failed, which
+          #    would leave the address everyone actually uses on the old build.
+          alias_health=$(curl -sS --max-time 20 "$PRODUCTION_URL/api/health") \
+            || fail "$PRODUCTION_URL did not respond"
+          echo "$alias_health" | grep -q '"status":"ok"' \
+            || fail "$PRODUCTION_URL did not report ok: ${alias_health:0:200}"
+          echo "production alias ok"
+
+          echo "::notice title=Deployed::$DEPLOY_URL is live and verified, and $PRODUCTION_URL serves it."
